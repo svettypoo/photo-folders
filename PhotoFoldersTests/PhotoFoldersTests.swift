@@ -295,6 +295,18 @@ final class CustomFolderTests: XCTestCase {
         XCTAssertFalse(r.members.contains(receipts[0]))
     }
 
+    func testDescribedFolderKeepsLowConfidenceMatchesButNotLooseOnes() {
+        var recs = f.records
+        // A dog the model was only moderately sure about still belongs in "dogs".
+        recs[0].labels = [LabelHit(name: "dog", confidence: 0.3), LabelHit(name: "animal", confidence: 0.3)]
+        let index = SearchIndex(records: recs, categories: [], matcher: nil)
+        let strong = index.strongMatches("dogs", now: f.now, calendar: f.calendar)
+        XCTAssertTrue(strong.contains(recs[0].id))
+        XCTAssertEqual(strong.count, 30)
+        // "receipts" does not drag in screenshots that merely contain text.
+        XCTAssertEqual(index.strongMatches("receipts", now: f.now, calendar: f.calendar).count, 12)
+    }
+
     func testLookVectorRoundTrip() {
         let v = LookVector.quantize([0.1, -0.2, 0.05, 0.3])!
         XCTAssertEqual(LookVector(data: v.data)!.values, v.values)

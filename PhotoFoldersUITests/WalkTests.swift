@@ -140,7 +140,7 @@ final class WalkTests: XCTestCase {
             mine.tap()
             pause(2.5)
             shot("18-your-folder-open")
-            app.buttons["Folder options"].tap()
+            app.buttons["Folder options"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             pause(1)
             app.buttons["Edit folder"].tap()
             pause(2.5)

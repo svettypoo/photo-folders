@@ -92,7 +92,18 @@ enum CategoryEngine {
         let sparseConf: [[(Int, Float)]] = features.map { f in f.map { (vocab[$0.0]!, $0.1) } }
 
         let k = targetK(n, granularity: options.granularity)
-        let (assign, _) = sphericalKMeans(vectors, dims: dims, k: k)
+        // Several starting points; keep the tidiest grouping (photos closest to their folder's centre).
+        let restarts = n < 2_000 ? 8 : n < 10_000 ? 3 : 1
+        var assign: [Int] = []
+        var bestFit = -Float.infinity
+        for r in 0..<restarts {
+            let (a, cents) = sphericalKMeans(vectors, dims: dims, k: k, seed: 0x5EED &+ UInt64(r) &* 7919)
+            var fit: Float = 0
+            if !cents.isEmpty {
+                for (i, c) in a.enumerated() { fit += vectors[i].reduce(Float(0)) { $0 + $1.1 * cents[c][$1.0] } }
+            }
+            if fit > bestFit { bestFit = fit; assign = a }
+        }
 
         var clusters: [Cluster] = []
         var byLabel: [Int: Int] = [:]

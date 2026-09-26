@@ -160,6 +160,29 @@ final class SearchIndex {
         return outcome
     }
 
+    /// Photos that clearly match every word: a label the words name directly (or their everyday meaning) seen
+    /// with reasonable confidence, or the exact word read in the photo. Used to fill the person's own folders,
+    /// where near-misses would be clutter.
+    func strongMatches(_ raw: String, now: Date = Date(), calendar: Calendar = .current) -> Set<String> {
+        let parsed = DateQueryParser(now: now, calendar: calendar).parse(raw)
+        let terms = parsed.remaining.filter { !Vocabulary.stopwords.contains($0) }
+        guard !terms.isEmpty || parsed.range != nil else { return [] }
+        var result: Set<Int>?
+        for term in terms {
+            var hits = Set<Int>()
+            for (label, w) in labelMatches(term, isLast: false) where w >= 0.85 {
+                for (idx, conf) in labelPostings[label] ?? [] where conf >= 0.2 { hits.insert(idx) }
+            }
+            for word in Set([term, TextTools.singular(term)]) { hits.formUnion(textPostings[word] ?? []) }
+            result = result.map { $0.intersection(hits) } ?? hits
+        }
+        var ids = result ?? Set(records.indices)
+        if let range = parsed.range {
+            ids = ids.filter { records[$0].date.map(range.contains) ?? false }
+        }
+        return Set(ids.map { records[$0].id })
+    }
+
     // MARK: - Matching one word
 
     /// Labels a word can mean, with a 0...1 weight.
@@ -176,8 +199,9 @@ final class SearchIndex {
         for v in variants {
             if labelPostings[v] != nil { add(v, 1.0) }
             for l in tokenToLabels[v] ?? [] { add(l, l == v ? 1.0 : 0.88) }
-            for target in Vocabulary.synonyms[v] ?? [] {
-                if labelPostings[target] != nil { add(target, 0.92) }
+            for (rank, target) in (Vocabulary.synonyms[v] ?? []).enumerated() {
+                // The first meaning is the everyday one; later ones are looser.
+                if labelPostings[target] != nil { add(target, rank == 0 ? 0.92 : 0.84) }
                 for l in tokenToLabels[target] ?? [] { add(l, 0.82) }
             }
         }
