@@ -72,7 +72,10 @@ enum CustomFolderResolver {
         let describe = folder.describe.trimmingCharacters(in: .whitespacesAndNewlines)
         if !describe.isEmpty, let search {
             let outcome = search.search(describe + " ", now: now, calendar: calendar, limit: Int.max)
-            for hit in outcome.hits where hit.matchedAll { picked.insert(hit.id) }
+            // A folder keeps only strong matches; loose look-alike words still show up in search.
+            let full = outcome.hits.filter(\.matchedAll)
+            let best = full.map(\.score).max() ?? 0
+            for hit in full where hit.score >= best * 0.8 { picked.insert(hit.id) }
         }
 
         let examples = folder.exampleIDs.compactMap { looks[$0] }
