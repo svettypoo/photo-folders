@@ -97,7 +97,7 @@ final class WalkTests: XCTestCase {
         }
         for _ in 0..<4 {
             let back = app.navigationBars.buttons.element(boundBy: 0)
-            guard back.exists, back.label != "Settings" else { break }
+            guard back.exists, !["Settings", "New folder"].contains(back.label) else { break }
             back.tap()
             pause(1)
         }
