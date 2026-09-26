@@ -52,7 +52,7 @@ final class WalkTests: XCTestCase {
         pause(1)
 
         // Peek into the first folder before opening it.
-        let firstFolder = app.scrollViews.firstMatch.buttons.firstMatch
+        let firstFolder = app.scrollViews.firstMatch.buttons.matching(NSPredicate(format: "label CONTAINS 'photo'")).firstMatch
         XCTAssertTrue(firstFolder.waitForExistence(timeout: 5))
         firstFolder.press(forDuration: 1.3)
         pause(2.5)
