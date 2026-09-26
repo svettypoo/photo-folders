@@ -121,8 +121,38 @@ final class WalkTests: XCTestCase {
         if cancel.exists { cancel.tap() }
         pause(1)
 
+        // Make your own folder by describing it.
+        app.buttons["New folder"].tap()
+        let name = app.textFields["folderName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("My dogs")
+        let describe = app.textFields["folderDescription"]
+        describe.tap()
+        describe.typeText("dogs")
+        pause(3)
+        shot("16-new-folder")
+        app.buttons["Save"].tap()
+        pause(3)
+        shot("17-your-folders")
+        let mine = app.scrollViews.firstMatch.buttons.containing(NSPredicate(format: "label BEGINSWITH 'My dogs'")).firstMatch
+        if mine.waitForExistence(timeout: 5) {
+            mine.tap()
+            pause(2.5)
+            shot("18-your-folder-open")
+            app.buttons["Folder options"].tap()
+            pause(1)
+            app.buttons["Edit folder"].tap()
+            pause(2.5)
+            shot("19-edit-folder")
+            app.buttons["Cancel"].tap()
+            pause(1)
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            pause(1)
+        }
+
         app.buttons["Settings"].tap()
         pause(2)
-        shot("16-settings")
+        shot("20-settings")
     }
 }

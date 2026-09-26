@@ -42,7 +42,7 @@ struct PhotoGroup: Identifiable, Hashable {
 }
 
 struct PhotoCategory: Identifiable, Hashable {
-    enum Kind: String, Hashable { case invented, screenshots, unsorted }
+    enum Kind: String, Hashable { case custom, invented, screenshots, unsorted }
 
     var id: String
     var name: String

@@ -30,11 +30,15 @@ final class LibraryModel: ObservableObject {
         }
     }
     @Published private(set) var customNames: [String: String]
+    @Published private(set) var customFolders: [CustomFolder]
 
     private(set) var records: [String: PhotoRecord] = [:]
     private var categoryByID: [String: PhotoCategory] = [:]
     private var groupByID: [String: PhotoGroup] = [:]
     private let store = IndexStore()
+    private let lookStore = LookStore()
+    private var looks: [String: LookVector] = [:]
+    private var baseIndex: SearchIndex?
     private let analyzer = PhotoAnalyzer()
     private let matcher = NLSemanticMatcher()
     private var syncTask: Task<Void, Never>?
@@ -47,6 +51,12 @@ final class LibraryModel: ObservableObject {
         let g = UserDefaults.standard.double(forKey: "granularity")
         granularity = g == 0 ? 1.0 : g
         customNames = (UserDefaults.standard.dictionary(forKey: "customNames") as? [String: String]) ?? [:]
+        if let data = UserDefaults.standard.data(forKey: "customFolders"),
+           let list = try? JSONDecoder().decode([CustomFolder].self, from: data) {
+            customFolders = list
+        } else {
+            customFolders = []
+        }
     }
 
     // MARK: - Start
@@ -54,6 +64,7 @@ final class LibraryModel: ObservableObject {
     func start() async {
         guard !loaded else { return }
         records = await store.load()
+        looks = (await lookStore.load()).compactMapValues { LookVector(data: $0) }
         indexedPhotos = records.count
         loaded = true
         if !records.isEmpty { rebuild() }
@@ -126,7 +137,7 @@ final class LibraryModel: ObservableObject {
         // Forget deleted photos; refresh the cheap "favorite" mark.
         let removed = records.keys.filter { map[$0] == nil }
         var touched: [PhotoRecord] = []
-        for id in removed { records[id] = nil }
+        for id in removed { records[id] = nil; looks[id] = nil }
         for (id, a) in map {
             guard var r = records[id] else { continue }
             let fav = r.traits.contains(Trait.favorite)
@@ -136,7 +147,7 @@ final class LibraryModel: ObservableObject {
                 touched.append(r)
             }
         }
-        if !removed.isEmpty { await store.remove(removed) }
+        if !removed.isEmpty { await store.remove(removed); await lookStore.remove(removed) }
         if !touched.isEmpty { await store.upsert(touched) }
 
         let todo = assets.filter { records[$0.localIdentifier]?.version != PhotoAnalyzer.version }
@@ -144,6 +155,7 @@ final class LibraryModel: ObservableObject {
         guard !todo.isEmpty else {
             if !removed.isEmpty || !touched.isEmpty || categories.isEmpty { rebuild() }
             await store.save()
+            await lookStore.save()
             return
         }
 
@@ -158,24 +170,31 @@ final class LibraryModel: ObservableObject {
         var nextRebuild = min(40, todo.count)
         for chunk in todo.chunked(6) {
             if Task.isCancelled { break }
-            let results = await withTaskGroup(of: PhotoRecord.self) { group -> [PhotoRecord] in
+            let results = await withTaskGroup(of: PhotoAnalyzer.Analysis.self) { group -> [PhotoAnalyzer.Analysis] in
                 for a in chunk { group.addTask { await analyzer.analyze(a) } }
-                var out: [PhotoRecord] = []
+                var out: [PhotoAnalyzer.Analysis] = []
                 for await r in group { out.append(r) }
                 return out
             }
-            for r in results { records[r.id] = r }
-            await store.upsert(results)
+            var newLooks: [String: Data] = [:]
+            for r in results {
+                records[r.record.id] = r.record
+                if let look = r.look { looks[r.record.id] = look; newLooks[r.record.id] = look.data }
+            }
+            await store.upsert(results.map(\.record))
+            await lookStore.upsert(newLooks)
             progressDone += chunk.count
             indexedPhotos = records.count
             log.notice("progress \(self.progressDone, privacy: .public) of \(self.progressTotal, privacy: .public)")
             if progressDone >= nextRebuild {
                 rebuild()
                 await store.save()
+                await lookStore.save()
                 nextRebuild = progressDone + min(max(progressDone, 40), 1500)
             }
         }
         await store.save()
+        await lookStore.save()
         isIndexing = false
         UIApplication.shared.isIdleTimerDisabled = false
         rebuild()
@@ -188,16 +207,19 @@ final class LibraryModel: ObservableObject {
         let recs = Array(records.values)
         let options = CategoryEngine.Options(granularity: granularity, customNames: customNames)
         let matcher = self.matcher
+        let looks = self.looks
+        let folders = self.customFolders
         rebuildTask?.cancel()
         isBuilding = true
         rebuildTask = Task { [weak self] in
-            let built = await Task.detached(priority: .userInitiated) { () -> ([PhotoCategory], SearchIndex) in
-                let cats = CategoryEngine.build(records: recs, options: options)
-                return (cats, SearchIndex(records: recs, categories: cats, matcher: matcher))
+            let all = await Task.detached(priority: .userInitiated) {
+                CategoryEngine.buildAll(records: recs, looks: looks, customFolders: folders, options: options, matcher: matcher)
             }.value
             guard let self, !Task.isCancelled else { return }
+            let built = (all.categories, all.index)
             self.categories = built.0
             self.searchIndex = built.1
+            self.baseIndex = all.baseIndex
             var cmap: [String: PhotoCategory] = [:]
             var gmap: [String: PhotoGroup] = [:]
             for c in built.0 {
@@ -223,13 +245,50 @@ final class LibraryModel: ObservableObject {
         rebuild()
     }
 
+    // MARK: - The person's own folders
+
+    func saveCustomFolder(_ folder: CustomFolder) {
+        var f = folder
+        f.name = f.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let i = customFolders.firstIndex(where: { $0.id == f.id }) { customFolders[i] = f } else { customFolders.append(f) }
+        persistCustomFolders()
+        rebuild()
+    }
+
+    func deleteCustomFolder(_ id: String) {
+        customFolders.removeAll { $0.id == id }
+        persistCustomFolders()
+        rebuild()
+    }
+
+    func customFolder(forCategory categoryID: String) -> CustomFolder? {
+        customFolders.first { $0.categoryID == categoryID }
+    }
+
+    /// Which photos a folder being edited would hold, right now.
+    func preview(_ folder: CustomFolder) async -> CustomFolderResolver.Result {
+        let recs = Array(records.values)
+        let looks = self.looks
+        let index = baseIndex ?? searchIndex
+        return await Task.detached(priority: .userInitiated) {
+            CustomFolderResolver.resolve(folder, records: recs, search: index, looks: looks)
+        }.value
+    }
+
+    private func persistCustomFolders() {
+        if let data = try? JSONEncoder().encode(customFolders) { UserDefaults.standard.set(data, forKey: "customFolders") }
+    }
+
     func reanalyzeEverything() {
         syncTask?.cancel()
         Task {
             await syncTask?.value
             records = [:]
+            looks = [:]
             await store.clear()
             await store.save()
+            await lookStore.clear()
+            await lookStore.save()
             categories = []
             searchIndex = nil
             sync()

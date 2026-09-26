@@ -59,3 +59,51 @@ actor IndexStore {
         }
     }
 }
+
+/// What each photo looks like (compact image feature prints), kept in a second file on the phone.
+actor LookStore {
+    private var looks: [String: Data] = [:]
+    private var dirty = false
+    private let file: URL
+    private let log = Logger(subsystem: "com.stproperties.photofolders", category: "store")
+
+    init() {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        file = base.appendingPathComponent("PhotoFolders", isDirectory: true).appendingPathComponent("looks.plist")
+    }
+
+    func load() -> [String: Data] {
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? PropertyListDecoder().decode([String: Data].self, from: data) else { return [:] }
+        looks = decoded
+        return looks
+    }
+
+    func upsert(_ items: [String: Data]) {
+        for (k, v) in items { looks[k] = v }
+        dirty = true
+    }
+
+    func remove(_ ids: [String]) {
+        for id in ids { looks[id] = nil }
+        dirty = true
+    }
+
+    func clear() {
+        looks = [:]
+        dirty = true
+    }
+
+    func save() {
+        guard dirty else { return }
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(looks).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            dirty = false
+        } catch {
+            log.error("looks save failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}

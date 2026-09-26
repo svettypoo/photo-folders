@@ -9,7 +9,12 @@ import Vision
 /// Nothing is downloaded and nothing leaves the phone.
 final class PhotoAnalyzer {
     /// Bump when the analysis changes so old photos are looked at again.
-    static let version = 1
+    static let version = 2
+
+    struct Analysis {
+        var record: PhotoRecord
+        var look: LookVector?
+    }
     private let log = Logger(subsystem: "com.stproperties.photofolders", category: "analyzer")
 
     /// Vision and image loading are blocking calls: they run on this queue, never on the main thread
@@ -18,23 +23,23 @@ final class PhotoAnalyzer {
                                              qos: .userInitiated, attributes: .concurrent)
     private static let gate = DispatchSemaphore(value: 3)
 
-    func analyze(_ asset: PHAsset) async -> PhotoRecord {
-        await withCheckedContinuation { (cont: CheckedContinuation<PhotoRecord, Never>) in
+    func analyze(_ asset: PHAsset) async -> Analysis {
+        await withCheckedContinuation { (cont: CheckedContinuation<Analysis, Never>) in
             Self.queue.async {
                 Self.gate.wait()
                 defer { Self.gate.signal() }
                 let started = Date()
-                let record = self.analyzeNow(asset)
+                let result = self.analyzeNow(asset)
                 let ms = Int(Date().timeIntervalSince(started) * 1000)
-                let top = record.labels.prefix(3).map(\.name).joined(separator: ", ")
+                let top = result.record.labels.prefix(3).map(\.name).joined(separator: ", ")
                 self.log.notice("analyzed in \(ms, privacy: .public) ms: \(top, privacy: .public)")
-                cont.resume(returning: record)
+                cont.resume(returning: result)
             }
         }
     }
 
     /// Blocking. Call only from the analyzer queue.
-    private func analyzeNow(_ asset: PHAsset) -> PhotoRecord {
+    private func analyzeNow(_ asset: PHAsset) -> Analysis {
         var traits: [String] = []
         let subtypes = asset.mediaSubtypes
         if subtypes.contains(.photoScreenshot) { traits.append(Trait.screenshot) }
@@ -51,17 +56,19 @@ final class PhotoAnalyzer {
 
         guard let image = Self.loadImageNow(asset, side: 1024), let cg = image.cgImage else {
             log.info("no local image for \(asset.localIdentifier, privacy: .public)")
-            return record
+            return Analysis(record: record, look: nil)
         }
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
         let handler = VNImageRequestHandler(cgImage: cg, orientation: orientation, options: [:])
 
         let classify = VNClassifyImageRequest()
         let faces = VNDetectFaceRectanglesRequest()
+        let looks = VNGenerateImageFeaturePrintRequest()
         Self.preferCPUOnSimulator(classify)
         Self.preferCPUOnSimulator(faces)
+        Self.preferCPUOnSimulator(looks)
         do {
-            try handler.perform([classify, faces])
+            try handler.perform([classify, faces, looks])
         } catch {
             log.error("vision failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -71,10 +78,12 @@ final class PhotoAnalyzer {
             .map { LabelHit(name: TextTools.prettyLabel($0.identifier), confidence: $0.confidence) }
         record.labels = Array(labels)
         record.faceCount = faces.results?.count ?? 0
+        var look = looks.results?.first.flatMap { LookVector.quantize(Self.floats($0)) }
         #if targetEnvironment(simulator)
         if let real = Self.simulatorLabels(for: asset) {
             record.labels = real.labels.map { LabelHit(name: $0.name, confidence: $0.confidence) }
             record.faceCount = real.faces
+            if let b64 = real.look, let data = Data(base64Encoded: b64) { look = LookVector(data: data) }
         }
         #endif
         if record.faceCount > 0 { record.traits.append(Trait.people) }
@@ -98,13 +107,23 @@ final class PhotoAnalyzer {
                 log.error("text reader failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        return record
+        return Analysis(record: record, look: look)
+    }
+
+    /// The numbers inside Apple's image feature print (what a photo looks like), as floats.
+    static func floats(_ observation: VNFeaturePrintObservation) -> [Float] {
+        let data = observation.data
+        switch observation.elementType {
+        case .float: return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        case .double: return data.withUnsafeBytes { $0.bindMemory(to: Double.self).map { Float($0) } }
+        default: return []
+        }
     }
 
     #if targetEnvironment(simulator)
     /// Simulator only: its scene classifier is a stand-in that gives every picture the same answer, so a
     /// test run may drop real results from Apple's classifier on a Mac into Documents/sim-labels.json.
-    private struct SimEntry: Decodable { struct Hit: Decodable { let name: String; let confidence: Float }; let labels: [Hit]; let faces: Int }
+    private struct SimEntry: Decodable { struct Hit: Decodable { let name: String; let confidence: Float }; let labels: [Hit]; let faces: Int; let look: String? }
     private static let simLabels: [String: SimEntry] = {
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("sim-labels.json")
         guard let data = try? Data(contentsOf: url) else { return [:] }

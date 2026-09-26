@@ -227,3 +227,77 @@ final class TextToolsTests: XCTestCase {
         XCTAssertEqual(TextTools.singular("children"), "child")
     }
 }
+
+final class CustomFolderTests: XCTestCase {
+    private var f: LibraryFixture!
+    private var looks: [String: LookVector] = [:]
+
+    override func setUp() {
+        f = LibraryFixture()
+        looks = [:]
+        for (i, r) in f.records.enumerated() {
+            let n = Int8(i % 7)
+            var v = [Int8](repeating: 0, count: 8)
+            if r.labels.contains(where: { $0.name == "dog" }) { v[0] = 120; v[1] = n }
+            else if r.labels.contains(where: { $0.name == "cat" }) { v[2] = 120; v[3] = n }
+            else { v[4] = 100; v[5] = n; v[6] = Int8(i % 3) }
+            looks[r.id] = LookVector(values: v)
+        }
+    }
+
+    private func labelled(_ label: String) -> Set<String> {
+        Set(f.records.filter { $0.labels.contains { $0.name == label } }.map(\.id))
+    }
+
+    func testDescriptionFillsFolderAndTakesPhotosOutOfInventedFolders() {
+        let folder = CustomFolder(name: "Receipts", describe: "receipts")
+        let out = CategoryEngine.buildAll(records: f.records, looks: looks, customFolders: [folder],
+                                          options: .init(), matcher: nil, now: f.now)
+        let mine = out.categories.first!
+        XCTAssertEqual(mine.kind, .custom)
+        XCTAssertEqual(mine.name, "Receipts")
+        XCTAssertEqual(Set(mine.photoIDs), labelled("receipt"))
+        XCTAssertFalse(out.categories.dropFirst().contains { $0.name.hasPrefix("Document") }, out.categories.map(\.name).description)
+        let all = out.categories.flatMap(\.photoIDs)
+        XCTAssertEqual(all.count, f.records.count, "every photo in exactly one folder")
+        XCTAssertEqual(Set(all).count, f.records.count)
+        // Its name is searchable like any folder.
+        XCTAssertTrue(out.index.search("receipts ", now: f.now, calendar: f.calendar).categoryIDs.contains(folder.categoryID))
+    }
+
+    func testExamplesFindLookAlikes() {
+        let dogs = Array(labelled("dog")).sorted()
+        let folder = CustomFolder(name: "Rex", exampleIDs: [dogs[0], dogs[5]])
+        let r = CustomFolderResolver.resolve(folder, records: f.records, search: nil, looks: looks, now: f.now)
+        XCTAssertEqual(Set(r.members), labelled("dog"))
+    }
+
+    func testSingleExampleLoose() {
+        let dogs = Array(labelled("dog")).sorted()
+        var folder = CustomFolder(name: "Rex", exampleIDs: [dogs[0]])
+        folder.closeness = 1
+        let r = CustomFolderResolver.resolve(folder, records: f.records, search: nil, looks: looks, now: f.now)
+        XCTAssertEqual(Set(r.members), labelled("dog"))
+        folder.closeness = 0
+        let strict = CustomFolderResolver.resolve(folder, records: f.records, search: nil, looks: looks, now: f.now)
+        XCTAssertTrue(Set(strict.members).isSubset(of: labelled("dog")))
+        XCTAssertLessThanOrEqual(strict.members.count, r.members.count)
+    }
+
+    func testLeftOutPhotosStayOut() {
+        let receipts = Array(labelled("receipt")).sorted()
+        let folder = CustomFolder(name: "Receipts", describe: "receipts", excluded: [receipts[0]])
+        let r = CustomFolderResolver.resolve(folder, records: f.records,
+                                             search: SearchIndex(records: f.records, categories: [], matcher: nil),
+                                             looks: looks, now: f.now)
+        XCTAssertEqual(r.candidates.count, 12)
+        XCTAssertEqual(r.members.count, 11)
+        XCTAssertFalse(r.members.contains(receipts[0]))
+    }
+
+    func testLookVectorRoundTrip() {
+        let v = LookVector.quantize([0.1, -0.2, 0.05, 0.3])!
+        XCTAssertEqual(LookVector(data: v.data)!.values, v.values)
+        XCTAssertEqual(v.similarity(v), 1, accuracy: 0.001)
+    }
+}

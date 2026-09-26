@@ -71,6 +71,7 @@ struct HomeView: View {
     @StateObject private var router = Router()
     @State private var showSettings = false
     @State private var renaming: PhotoCategory?
+    @State private var editing: EditTarget?
     @State private var launchArgsApplied = false
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
@@ -89,6 +90,10 @@ struct HomeView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { editing = EditTarget(folder: nil) } label: { Image(systemName: "folder.badge.plus") }
+                        .accessibilityLabel("New folder")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("Settings")
@@ -103,6 +108,9 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView().environmentObject(library)
+            }
+            .sheet(item: $editing) { target in
+                CustomFolderEditor(folder: target.folder).environmentObject(library)
             }
             .renameFolder($renaming)
         }
@@ -125,26 +133,46 @@ struct HomeView: View {
                                                description: Text("Take or add some photos and they will be sorted here."))
                     }
                 }
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
-                    ForEach(library.categories) { c in
-                        NavigationLink(value: Route.category(c.id)) {
-                            FolderTile(title: c.name, subtitle: photoCount(c.photoIDs.count), coverIDs: c.coverIDs, symbol: c.symbol)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button { router.path.append(Route.category(c.id)) } label: { Label("Open", systemImage: "folder") }
-                            Button { router.path.append(Route.all(c.id)) } label: { Label("All photos", systemImage: "square.grid.3x3") }
-                            Button { renaming = c } label: { Label("Rename", systemImage: "pencil") }
-                        } preview: {
-                            FolderPeek(title: c.name, subtitle: peekSubtitle(c), ids: c.photoIDs)
-                        }
+                let mine = library.categories.filter { $0.kind == .custom }
+                let invented = library.categories.filter { $0.kind != .custom }
+                if !mine.isEmpty {
+                    Text("Your folders").font(.title3.weight(.semibold))
+                    folderGrid(mine)
+                    Text("Invented folders").font(.title3.weight(.semibold)).padding(.top, 6)
+                } else if !invented.isEmpty {
+                    Button { editing = EditTarget(folder: nil) } label: {
+                        Label("Make your own folder — describe it or show examples", systemImage: "folder.badge.plus")
+                            .font(.subheadline)
                     }
                 }
+                folderGrid(invented)
             }
             .padding(.horizontal)
             .padding(.bottom, 30)
         }
         .refreshable { library.sync() }
+    }
+
+    private func folderGrid(_ list: [PhotoCategory]) -> some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
+            ForEach(list) { c in
+                NavigationLink(value: Route.category(c.id)) {
+                    FolderTile(title: c.name, subtitle: photoCount(c.photoIDs.count), coverIDs: c.coverIDs, symbol: c.symbol)
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button { router.path.append(Route.category(c.id)) } label: { Label("Open", systemImage: "folder") }
+                    Button { router.path.append(Route.all(c.id)) } label: { Label("All photos", systemImage: "square.grid.3x3") }
+                    if c.kind == .custom, let f = library.customFolder(forCategory: c.id) {
+                        Button { editing = EditTarget(folder: f) } label: { Label("Edit folder", systemImage: "slider.horizontal.3") }
+                    } else {
+                        Button { renaming = c } label: { Label("Rename", systemImage: "pencil") }
+                    }
+                } preview: {
+                    FolderPeek(title: c.name, subtitle: peekSubtitle(c), ids: c.photoIDs)
+                }
+            }
+        }
     }
 
     private func peekSubtitle(_ c: PhotoCategory) -> String {
@@ -207,4 +235,9 @@ struct StatusBanner: View {
 
 final class Router: ObservableObject {
     @Published var path = NavigationPath()
+}
+
+struct EditTarget: Identifiable {
+    let id = UUID()
+    let folder: CustomFolder?
 }

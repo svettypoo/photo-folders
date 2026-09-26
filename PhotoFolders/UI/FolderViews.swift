@@ -4,6 +4,7 @@ struct CategoryView: View {
     let categoryID: String
     @EnvironmentObject private var library: LibraryModel
     @State private var renaming: PhotoCategory?
+    @State private var editing: EditTarget?
     @EnvironmentObject private var router: Router
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
@@ -12,6 +13,15 @@ struct CategoryView: View {
             if let c = library.category(categoryID) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        if let f = library.customFolder(forCategory: c.id) {
+                            FlowLayout(spacing: 6) {
+                                if !f.describe.isEmpty { Chip(text: "“\(f.describe)”", systemImage: "text.magnifyingglass") }
+                                if !f.exampleIDs.isEmpty {
+                                    Chip(text: f.exampleIDs.count == 1 ? "1 example photo" : "\(f.exampleIDs.count) example photos", systemImage: "photo.on.rectangle")
+                                }
+                                if !f.excluded.isEmpty { Chip(text: "\(f.excluded.count) left out", systemImage: "minus.circle", muted: true) }
+                            }
+                        }
                         if !c.keywords.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("What’s in here").font(.caption).foregroundStyle(.secondary)
@@ -55,11 +65,19 @@ struct CategoryView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button { renaming = c } label: { Label("Rename folder", systemImage: "pencil") }
+                            if let f = library.customFolder(forCategory: c.id) {
+                                Button { editing = EditTarget(folder: f) } label: { Label("Edit folder", systemImage: "slider.horizontal.3") }
+                            } else {
+                                Button { renaming = c } label: { Label("Rename folder", systemImage: "pencil") }
+                            }
                         } label: { Image(systemName: "ellipsis.circle") }
+                        .accessibilityLabel("Folder options")
                     }
                 }
                 .renameFolder($renaming)
+                .sheet(item: $editing) { target in
+                    CustomFolderEditor(folder: target.folder).environmentObject(library)
+                }
             } else {
                 ContentUnavailableView("This folder was re-sorted", systemImage: "folder.badge.questionmark",
                                        description: Text("New photos changed the folders. Go back to see them."))

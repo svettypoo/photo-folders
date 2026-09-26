@@ -6,7 +6,7 @@ import Foundation
 import Vision
 
 struct Hit: Codable { let name: String; let confidence: Float }
-struct Entry: Codable { let labels: [Hit]; let faces: Int }
+struct Entry: Codable { let labels: [Hit]; let faces: Int; let look: String? }
 
 let dir = CommandLine.arguments[1]
 var out: [String: Entry] = [:]
@@ -17,10 +17,22 @@ for f in files.sorted() where f.lowercased().hasSuffix(".jpg") {
           let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
     let classify = VNClassifyImageRequest()
     let faces = VNDetectFaceRectanglesRequest()
-    try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([classify, faces])
+    let looks = VNGenerateImageFeaturePrintRequest()
+    try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([classify, faces, looks])
+    var look: String?
+    if let fp = looks.results?.first {
+        let floats: [Float] = fp.elementType == .double
+            ? fp.data.withUnsafeBytes { $0.bindMemory(to: Double.self).map { Float($0) } }
+            : fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let maxAbs = floats.reduce(Float(0)) { max($0, abs($1)) }
+        if maxAbs > 0 {
+            let bytes = floats.map { UInt8(bitPattern: Int8(max(-127, min(127, ($0 / maxAbs * 127).rounded())))) }
+            look = Data(bytes).base64EncodedString()
+        }
+    }
     let labels = (classify.results ?? []).filter { $0.confidence >= 0.1 }.prefix(20)
         .map { Hit(name: $0.identifier.replacingOccurrences(of: "_", with: " ").lowercased(), confidence: $0.confidence) }
-    out[f] = Entry(labels: Array(labels), faces: faces.results?.count ?? 0)
+    out[f] = Entry(labels: Array(labels), faces: faces.results?.count ?? 0, look: look)
     FileHandle.standardError.write("\(f): \(labels.prefix(4).map(\.name).joined(separator: ", "))\n".data(using: .utf8)!)
 }
 let enc = JSONEncoder()
